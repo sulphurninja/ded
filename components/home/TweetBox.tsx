@@ -27,47 +27,47 @@ function TweetBox() {
   const { currentAccount, fetchTweets, currentUser } =
     useContext(TwitterContext)
 
-  const submitTweet = async (event: any) => {
-    event.preventDefault();
-
-    if (!tweetMessage) return;
-
-    // Check if tweetImage is set and not an empty string
-    const imageField = tweetImage ? { image: { url: tweetImage  } } : {};
-
-    const tweetId = `${currentAccount}_${Date.now()}`;
-
-    const tweetDoc = {
-      _type: 'tweets',
-      _id: tweetId,
-      tweet: tweetMessage,
-      timestamp: new Date(Date.now()).toISOString(),
-      author: {
-        _key: tweetId,
-        _ref: currentAccount,
-        _type: 'reference',
-      },
-      ...imageField, // Include the image field if tweetImage is set
-    };
-
-    await client.createIfNotExists(tweetDoc);
-
-    await client
-      .patch(currentAccount)
-      .setIfMissing({ tweets: [] })
-      .insert('after', 'tweets[-1]', [
-        {
+    const submitTweet = async (event: any) => {
+      event.preventDefault();
+    
+      if (!tweetMessage) return;
+    
+      // Check if tweetImage is set and not an empty string
+      const imageField = tweetImage ? { image: { url: tweetImage } } : { image: undefined };
+    
+      const tweetId = `${currentAccount}_${Date.now()}`;
+    
+      const tweetDoc = {
+        _type: 'tweets',
+        _id: tweetId,
+        tweet: tweetMessage,
+        timestamp: new Date(Date.now()).toISOString(),
+        author: {
           _key: tweetId,
-          _ref: tweetId,
+          _ref: currentAccount,
           _type: 'reference',
         },
-      ])
-      .commit()
-
-    await fetchTweets()
-    setTweetMessage('')
-  }
-
+        ...imageField, // Include the image field even if tweetImage is not set
+      };
+    
+      await client.createIfNotExists(tweetDoc);
+    
+      await client
+        .patch(currentAccount)
+        .setIfMissing({ tweets: [] })
+        .insert('after', 'tweets[-1]', [
+          {
+            _key: tweetId,
+            _ref: tweetId,
+            _type: 'reference',
+          },
+        ])
+        .commit();
+    
+      await fetchTweets();
+      setTweetMessage('');
+    };
+    
 
   const [showModal, setShowModal] = useState(false);
 
