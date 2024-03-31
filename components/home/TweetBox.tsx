@@ -1,143 +1,240 @@
-import { useState, useContext } from 'react'
-import { TwitterContext } from '../../context/TwitterContext'
-import { BsCardImage, BsEmojiSmile } from 'react-icons/bs'
-import { RiFileGifLine, RiBarChartHorizontalFill } from 'react-icons/ri'
-import { IoMdCalendar } from 'react-icons/io'
-import { MdOutlineLocationOn } from 'react-icons/md'
-import { client } from '../../lib/client'
+import { createContext, useEffect, useState } from 'react'
+import { useRouter } from 'next/router'
+import { client } from '../lib/client'
 
-const style = {
-  wrapper: `px-4 flex flex-row border-b border-[#38444d] pb-4`,
-  tweetBoxLeft: `mr-4`,
-  tweetBoxRight: `flex-1`,
-  profileImage: `height-12 w-12 rounded-full`,
-  inputField: `w-full h-full outline-none bg-transparent text-lg`,
-  formLowerContainer: `flex`,
-  iconsContainer: `text-[#1d9bf0] flex flex-1 items-center`,
-  icon: `mr-2 cursor-pointer`,
-  submitGeneral: `px-6 py-2 rounded-3xl font-bold`,
-  inactiveSubmit: `bg-[#196195] text-[#95999e]`,
-  activeSubmit: `bg-[#1d9bf0] text-white`,
-}
+export const TwitterContext = createContext()
 
-function TweetBox() {
-  const [tweetMessage, setTweetMessage] = useState('');
-  const [tweetImage, setTweetImage] = useState('');
+export const TwitterProvider = ({ children }) => {
+  const [appStatus, setAppStatus] = useState('')
+  const [currentAccount, setCurrentAccount] = useState('')
+  const [currentUser, setCurrentUser] = useState({})
+  const [tweets, setTweets] = useState([]);
+  const [users, setUsers] = useState([]);
+  const router = useRouter()
 
-  const { currentAccount, fetchTweets, currentUser } =
-    useContext(TwitterContext)
+  useEffect(() => {
+    checkIfWalletIsConnected()
+  }, [])
 
-    const submitTweet = async (event: any) => {
-      event.preventDefault();
-    
-      if (!tweetMessage) return;
-    
-      // Check if tweetImage is set and not an empty string
-      const imageField = tweetImage ? { image: { url: tweetImage } } : { image: undefined };
-    
-      const tweetId = `${currentAccount}_${Date.now()}`;
-    
-      const tweetDoc = {
-        _type: 'tweets',
-        _id: tweetId,
-        tweet: tweetMessage,
-        timestamp: new Date(Date.now()).toISOString(),
-        author: {
-          _key: tweetId,
-          _ref: currentAccount,
-          _type: 'reference',
-        },
-        ...imageField, // Include the image field even if tweetImage is not set
-      };
-    
-      await client.createIfNotExists(tweetDoc);
-    
-      await client
-        .patch(currentAccount)
-        .setIfMissing({ tweets: [] })
-        .insert('after', 'tweets[-1]', [
-          {
-            _key: tweetId,
-            _ref: tweetId,
-            _type: 'reference',
+  useEffect(() => {
+    if (!currentAccount && appStatus == 'connected') return
+    getCurrentUserDetails(currentAccount)
+    fetchTweets();
+    fetchUsers();
+  }, [currentAccount, appStatus])
+
+  console.log(users, 'husersss')
+
+  /**
+   * Checks if there is an active wallet connection
+   */
+  const checkIfWalletIsConnected = async () => {
+    if (!window.ethereum) return setAppStatus('noMetaMask')
+    try {
+      const addressArray = await window.ethereum.request({
+        method: 'eth_accounts',
+      })
+      if (addressArray.length > 0) {
+        setAppStatus('connected')
+        setCurrentAccount(addressArray[0])
+
+        createUserAccount(addressArray[0])
+      } else {
+        router.push('/')
+        setAppStatus('notConnected')
+      }
+    } catch (err) {
+      router.push('/')
+      setAppStatus('error')
+    }
+  }
+
+  /**
+   * Initiates MetaMask wallet connection
+   */
+  const connectWallet = async () => {
+    if (!window.ethereum) return setAppStatus('noMetaMask')
+    try {
+      setAppStatus('loading')
+
+      const addressArray = await window.ethereum.request({
+        method: 'eth_requestAccounts',
+      })
+
+      if (addressArray.length > 0) {
+        setCurrentAccount(addressArray[0])
+        createUserAccount(addressArray[0])
+      } else {
+        router.push('/')
+        setAppStatus('notConnected')
+      }
+    } catch (err) {
+      setAppStatus('error')
+    }
+  }
+
+  /**
+   * Creates an account in Sanity DB if the user does not already have one
+   * @param {String} userAddress Wallet address of the currently logged in user
+   */
+  const createUserAccount = async (userAddress = currentAccount) => {
+    if (!window.ethereum) return setAppStatus('noMetaMask')
+    try {
+      const userDoc = {
+        _type: 'users',
+        _id: userAddress,
+        name: 'Unnamed',
+        isProfileImageNft: false,
+        profileImage:
+          'https://about.twitter.com/content/dam/about-twitter/en/brand-toolkit/brand-download-img-1.jpg.twimg.1920.jpg',
+        walletAddress: userAddress,
+      }
+
+      await client.createIfNotExists(userDoc)
+
+      setAppStatus('connected')
+    } catch (error) {
+      router.push('/')
+      setAppStatus('error')
+    }
+  }
+
+  /**
+   * Generates NFT profile picture URL or returns the image URL if it's not an NFT
+   * @param {String} imageUri If the user has minted a profile picture, an IPFS hash; if not then the URL of their profile picture
+   * @param {Boolean} isNft Indicates whether the user has minted a profile picture
+   * @returns A full URL to the profile picture
+   */
+  const getNftProfileImage = async (imageUri, isNft) => {
+    if (isNft) {
+      return `https://gateway.pinata.cloud/ipfs/${imageUri}`
+    } else if (!isNft) {
+      return imageUri
+    }
+  }
+
+  /**
+   * Gets all the tweets stored in Sanity DB.
+   */
+  const fetchTweets = async () => {
+    const query = `
+      *[_type == "tweets"]{
+        "author": author->{name, walletAddress, profileImage, isProfileImageNft},
+        tweet,
+        timestamp,
+        "image": image.url
+      }|order(timestamp desc)
+    `
+
+    // setTweets(await client.fetch(query))
+
+    const sanityResponse = await client.fetch(query)
+
+    setTweets([])
+
+    /**
+     * Async await not available with for..of loops.
+     */
+    sanityResponse.forEach(async item => {
+      const profileImageUrl = await getNftProfileImage(
+        item.author.profileImage,
+        item.author.isProfileImageNft,
+      )
+
+      if (item.author.isProfileImageNft) {
+        const newItem = {
+          tweet: item.tweet,
+          timestamp: item.timestamp,
+          author: {
+            name: item.author.name,
+            walletAddress: item.author.walletAddress,
+            profileImage: profileImageUrl,
+            isProfileImageNft: item.author.isProfileImageNft,
           },
-        ])
-        .commit();
-    
-      await fetchTweets();
-      setTweetMessage('');
-    };
-    
+        }
 
-  const [showModal, setShowModal] = useState(false);
+        setTweets(prevState => [...prevState, newItem])
+      } else {
+        setTweets(prevState => [...prevState, item])
+      }
+    })
+  }
 
-  const handleImageSubmit = () => {
-    // Here you can submit the tweetImage URL
-    console.log('Submitted tweetImage URL:', tweetImage);
 
-    // You can also perform additional actions like closing the modal
-    setShowModal(false);
-  };
 
+  const fetchUsers = async () => {
+    const query = `
+    *[_type == "users"]{
+      name,
+      walletAddress,
+      profileImage,
+    }
+    `
+
+    // setTweets(await client.fetch(query))
+
+    const sanityResponse = await client.fetch(query)
+    console.log(sanityResponse, 'what is this')
+    setUsers(sanityResponse)
+
+    /**
+     * Async await not available with for..of loops.
+     */
+
+  }
+
+  /**
+   * Gets the current user details from Sanity DB.
+   * @param {String} userAccount Wallet address of the currently logged in user
+   * @returns null
+   */
+  const getCurrentUserDetails = async (userAccount = currentAccount) => {
+    if (appStatus !== 'connected') return
+
+    const query = `
+      *[_type == "users" && _id == "${userAccount}"]{
+        "tweets": tweets[]->{timestamp, tweet}|order(timestamp desc),
+        name,
+        profileImage,
+        isProfileImageNft,
+        coverImage,
+        walletAddress
+      }
+    `
+    const response = await client.fetch(query)
+
+    const profileImageUri = await getNftProfileImage(
+      response[0].profileImage,
+      response[0].isProfileImageNft,
+    )
+
+    setCurrentUser({
+      tweets: response[0].tweets,
+      name: response[0].name,
+      profileImage: profileImageUri,
+      walletAddress: response[0].walletAddress,
+      coverImage: response[0].coverImage,
+      isProfileImageNft: response[0].isProfileImageNft,
+    })
+  }
 
   return (
-    <div className={style.wrapper}>
-      <div className={style.tweetBoxLeft}>
-        <img
-          src={currentUser.profileImage}
-          className={
-            currentUser.isProfileImageNft
-              ? `${style.profileImage} smallHex`
-              : style.profileImage
-          }
-        />
-      </div>
-      <div className={style.tweetBoxRight}>
-        <form>
-          <textarea
-            onChange={e => setTweetMessage(e.target.value)}
-            value={tweetMessage}
-            placeholder="What's happening?"
-            className={style.inputField}
-          />
-          <div className={style.formLowerContainer}>
-            <div className={style.iconsContainer}>
-              <BsCardImage className={style.icon} onClick={() => setShowModal(true)} />
-              {/* Modal for entering tweetImage URL */}
-              {showModal && (
-                <div className="modal ">
-                  <div className="modal-content">
-                    <input
-                      type="text"
-                      placeholder="Enter tweet image URL"
-                      value={tweetImage}
-                      onChange={(e) => setTweetImage(e.target.value)}
-                    />
-        
-                    <button className='p-4' onClick={() => setShowModal(false)}>X</button>
-                  </div>
-                </div>
-              )}
-              <RiFileGifLine className={style.icon} />
-              <RiBarChartHorizontalFill className={style.icon} />
-              <BsEmojiSmile className={style.icon} />
-              <IoMdCalendar className={style.icon} />
-              <MdOutlineLocationOn className={style.icon} />
-            </div>
-            <button
-              type='submit'
-              onClick={event => submitTweet(event)}
-              disabled={!tweetMessage}
-              className={`${style.submitGeneral} ${tweetMessage ? style.activeSubmit : style.inactiveSubmit
-                }`}
-            >
-              Post
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <TwitterContext.Provider
+      value={{
+        appStatus,
+        currentAccount,
+        connectWallet,
+        tweets,
+        fetchTweets,
+        users,
+        fetchUsers,
+        setAppStatus,
+        getNftProfileImage,
+        currentUser,
+        getCurrentUserDetails,
+      }}
+    >
+      {children}
+    </TwitterContext.Provider>
   )
 }
-
-export default TweetBox
